@@ -1,0 +1,16 @@
+[
+    {
+        "goal": "Expand to EU market",
+        "owner": "CEO",
+        "deadline": "Not set",
+        "status": "In Progress",
+        "progress_notes": []
+    },
+    {
+        "goal": "Test Uniqueness",
+        "owner": "CEO",
+        "deadline": "Not set",
+        "status": "Not Started",
+        "progress_notes": []
+    }
+]
