@@ -20,6 +20,13 @@ token.json
 # Streamlit secrets
 .streamlit/secrets.toml
 
+# User memory data
+memory/data.json
+
 # Operating System files
 Thumbs.db
 .DS_Store
+# User-specific runtime data
+memory/data.json
+tasks.json
+strategy.json

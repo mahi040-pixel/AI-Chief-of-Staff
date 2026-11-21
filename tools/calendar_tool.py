@@ -1,9 +1,13 @@
 import os
 
+from datetime import datetime, timedelta
+
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -11,31 +15,45 @@ SCOPES = [
 ]
 
 
+# ---------------- CALENDAR AUTHENTICATION ---------------- #
+
 def calendar_service():
 
     creds = None
 
     if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file(
-            "token.json",
-            SCOPES
-        )
 
-    if not creds or not creds.valid:
-
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "credentials.json",
+        try:
+            creds = Credentials.from_authorized_user_file(
+                "token.json",
                 SCOPES
             )
 
-            creds = flow.run_local_server(port=0)
+        except (ValueError, OSError):
+            creds = None
 
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+    if creds and creds.expired and creds.refresh_token:
+
+        try:
+            creds.refresh(Request())
+
+        except RefreshError:
+            creds = None
+
+    if not creds or not creds.valid:
+
+        if not os.path.exists("credentials.json"):
+            raise FileNotFoundError("credentials.json not found.")
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            "credentials.json",
+            SCOPES
+        )
+
+        creds = flow.run_local_server(port=0)
+
+    with open("token.json", "w") as token:
+        token.write(creds.to_json())
 
     service = build(
         "calendar",
@@ -45,6 +63,21 @@ def calendar_service():
 
     return service
 
+
+# ---------------- PREPARE CALENDAR EVENT ---------------- #
+
+def prepare_calendar_event(summary, start, end):
+
+    return {
+        "status": "pending_confirmation",
+        "title": summary,
+        "start": start,
+        "end": end,
+        "message": "Calendar event prepared. Waiting for confirmation."
+    }
+
+
+# ---------------- CREATE CONFIRMED EVENT ---------------- #
 
 def create_event(summary, start, end):
 
@@ -68,8 +101,9 @@ def create_event(summary, start, end):
     ).execute()
 
     return "Meeting created successfully."
-from datetime import datetime, timedelta
 
+
+# ---------------- GET TOMORROW'S MEETINGS ---------------- #
 
 def get_tomorrows_meetings():
 

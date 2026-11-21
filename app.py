@@ -1,22 +1,46 @@
 import streamlit as st
 import asyncio
+import json
+import memory.memory as memory_store
+import importlib
+importlib.reload(memory_store)
 
+
+from styles import apply_styles
 from dotenv import load_dotenv
 from agents import Runner
 
 from my_agents.planner import planner_agent
-from memory.memory import save_memory, load_memory
+from my_agents.email import email_agent
+from my_agents.calendar import calendar_agent
+
 from tools.meeting_tool import prepare_meeting
 from tools.report_tool import generate_executive_report
-from tools.strategy_tool import add_goal, list_goals, update_goal_status
+from tools.strategy_tool import add_goal, list_goals
 
-load_dotenv()
+from tools.gmail_tool import send_email
+from tools.calendar_tool import create_event
 
 st.set_page_config(
     page_title="AI Chief of Staff",
     page_icon="🤖",
     layout="wide"
 )
+load_dotenv()
+apply_styles()
+
+
+# ---------------- SESSION STATE ---------------- #
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "pending_action" not in st.session_state:
+    st.session_state.pending_action = None
+
+if "edit_email" not in st.session_state:
+    st.session_state.edit_email = False
+
 
 # ---------------- SIDEBAR ---------------- #
 
@@ -26,90 +50,101 @@ with st.sidebar:
 
     st.markdown("---")
 
-    st.subheader("Example Commands")
+    st.subheader("📌 Example Commands")
 
-    st.code("Research latest OpenAI news")
-    st.code("Send an email to abc@gmail.com")
-    st.code("Schedule a meeting tomorrow at 5 PM")
-    st.code("Prepare meeting brief on Q3 budget")
-    st.code("Create a task called Finish Project")
-    st.code("Show all my tasks")
-    st.code("Add strategic goal: Expand to EU market")
-    st.code("Show our strategic goals")
-    st.code("Generate executive summary report")
+    commands = [
+    ("🔍 Research", "Research latest OpenAI news"),
+    ("📧 Email", "Prepare an email draft"),
+    ("📅 Calendar", "Schedule a meeting tomorrow"),
+    ("📋 Meeting Brief", "Prepare a brief on Q3 budget"),
+    ("🎯 Strategy", "Add or review strategic goals")
+]
 
-    st.markdown("---")
+    for title, command in commands:
 
+      st.markdown(f"**{title}**")
+
+      st.code(command, language="text")
     st.subheader("🧠 Recent Memory")
-
-    history = load_memory()
+    history = memory_store.load_memory()
 
     if history:
 
         for item in history[-5:]:
-
             st.write("👤", item["user"])
 
     else:
-
         st.write("No memory yet.")
 
     st.markdown("---")
 
-    if st.button("🗑 Clear Chat"):
+    if st.button("🗑 Clear Chat", key="sidebar_clear_chat"):
 
         st.session_state.messages = []
-
+        st.session_state.pending_action = None
+        st.session_state.edit_email = False
+        memory_store.clear_memory()
         st.rerun()
 
-# ---------------- CHAT HISTORY ---------------- #
 
-if "messages" not in st.session_state:
+# ---------------- ROUTING ---------------- #
 
-    st.session_state.messages = []
-
-if "pending" not in st.session_state:
-
-    st.session_state.pending = None
-
-st.title("🤖 AI Chief of Staff")
-
-st.caption("Your AI Executive Assistant")
-
-for message in st.session_state.messages:
-
-    with st.chat_message(message["role"]):
-
-        st.markdown(message["content"])
-
-
-# ---------------- ROUTING (failsafe, mirrors main.py) ---------------- #
-
-def route(user_input: str):
-    """
-    Deterministic keyword routing for actions that must not depend on the
-    LLM choosing to hand off correctly. Falls back to the Planner Agent
-    (which can still hand off to any agent, including ones not listed
-    here) for everything else.
-    """
+def route(user_input):
 
     lower = user_input.lower()
 
     meeting_keywords = [
-        "meeting brief", "prepare meeting", "prepare a meeting",
-        "executive brief", "agenda", "discussion points", "briefing",
+        "meeting brief",
+        "prepare meeting",
+        "prepare a meeting",
+        "executive brief",
+        "agenda",
+        "discussion points",
+        "briefing"
     ]
 
     report_keywords = [
-        "executive summary", "daily report", "weekly report",
-        "status report", "summarize everything",
+        "executive summary",
+        "daily report",
+        "weekly report",
+        "status report",
+        "summarize everything"
     ]
 
-    add_goal_keywords = ["add strategic goal", "track goal", "set objective", "set an okr"]
+    add_goal_keywords = [
+        "add strategic goal",
+        "track goal",
+        "set objective",
+        "set an okr"
+    ]
 
     list_goal_keywords = [
-        "show our strategic goals", "show strategic goals",
-        "list strategic goals", "our strategic goals", "our priorities",
+        "show our strategic goals",
+        "show strategic goals",
+        "list strategic goals",
+        "our strategic goals",
+        "our priorities"
+    ]
+
+    email_keywords = [
+        "send email",
+        "send an email",
+        "draft email",
+        "write email",
+        "compose email"
+    ]
+
+    calendar_keywords = [
+    "schedule",
+    "scheduled",
+    "book a meeting",
+    "book meeting",
+    "set up a meeting",
+    "arrange a meeting",
+    "create a meeting",
+    "create meeting",
+    "create calendar event",
+    "add calendar event"
     ]
 
     if any(k in lower for k in meeting_keywords):
@@ -124,24 +159,38 @@ def route(user_input: str):
     if any(k in lower for k in list_goal_keywords):
         return "list_goals"
 
+    if any(k in lower for k in email_keywords):
+        return "email"
+
+    if any(k in lower for k in calendar_keywords):
+        return "calendar"
+
     return "planner"
 
 
-def extract_goal_text(user_input: str) -> str:
-    """Pulls the goal text out of a phrase like 'Add strategic goal: X'."""
+# ---------------- GOAL HELPERS ---------------- #
+
+def extract_goal_text(user_input):
 
     if ":" in user_input:
         return user_input.split(":", 1)[1].strip()
 
-    for keyword in ["add strategic goal", "track goal", "set objective", "set an okr"]:
+    for keyword in [
+        "add strategic goal",
+        "track goal",
+        "set objective",
+        "set an okr"
+    ]:
+
         idx = user_input.lower().find(keyword)
+
         if idx != -1:
             return user_input[idx + len(keyword):].strip(" :-")
 
     return user_input.strip()
 
 
-def format_goals(goals) -> str:
+def format_goals(goals):
 
     if not goals:
         return "No strategic goals tracked yet."
@@ -149,135 +198,532 @@ def format_goals(goals) -> str:
     output = ""
 
     for g in goals:
-        output += f"- {g['goal']} | Owner: {g['owner']} | Deadline: {g['deadline']} | Status: {g['status']}\n"
+
+        output += (
+            f"- {g['goal']} | "
+            f"Owner: {g['owner']} | "
+            f"Deadline: {g['deadline']} | "
+            f"Status: {g['status']}\n"
+        )
 
     return output
 
 
-CRITICAL_ACTION_HINTS = [
-    "send email", "schedule meeting", "create meeting",
-    "add meeting", "delete", "update goal",
-]
+# ---------------- EXTRACT PENDING ACTION ---------------- #
+
+def extract_pending_action(result):
+
+    candidates = []
+
+    for item in getattr(result, "new_items", []):
+
+        item_output = getattr(item, "output", None)
+
+        if item_output is not None:
+            candidates.append(item_output)
+
+    candidates.append(result.final_output)
+
+    for candidate in candidates:
+
+        if isinstance(candidate, dict):
+            data = candidate
+
+        elif isinstance(candidate, str):
+
+            try:
+                data = json.loads(candidate)
+
+            except (ValueError, TypeError):
+                continue
+
+        else:
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        if data.get("status") == "pending_confirmation":
+            return data
+
+    return None
 
 
-def is_critical_action(user_input: str) -> bool:
-    lower = user_input.lower()
-    return any(k in lower for k in CRITICAL_ACTION_HINTS)
+# ---------------- EXECUTE AGENT ---------------- #
+
+async def execute(agent, user_prompt):
+
+    result = await Runner.run(
+        agent,
+        user_prompt
+    )
+
+    return result
+# ---------------- CONVERSATION HISTORY ---------------- #
+
+def get_conversation_input():
+    return [
+        {
+            "role": msg["role"],
+            "content": msg["content"]
+        }
+        for msg in st.session_state.messages
+        if msg["role"] in ["user", "assistant"]
+    ]
+
+# ---------------- EXECUTIVE DASHBOARD ---------------- #
+
+st.markdown("""
+# 🤖 AI Chief of Staff
+
+Your intelligent executive workspace for managing
+research, meetings, emails and strategic goals.
+""")
+
+st.markdown("### Overview")
+
+goals = list_goals()
+memory_history = memory_store.load_memory()
+
+total_requests = len([
+    m for m in st.session_state.messages
+    if m["role"] == "user"
+])
+
+active_goals = len([
+    g for g in goals
+    if str(g.get("status", "")).lower()
+    not in ["completed", "complete"]
+])
+
+pending_approvals = (
+    1 if st.session_state.pending_action else 0
+)
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.metric("💬 Total Requests", total_requests)
+
+with c2:
+    st.metric("🎯 Active Goals", active_goals)
+
+with c3:
+    st.metric("🧠 Memory Records", len(memory_history))
+
+with c4:
+    st.metric("⏳ Pending Approvals", pending_approvals)
+
+st.markdown("---")
+
+# Workspace overview
+
+st.markdown("### Your Workspace")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown("#### 🔍 Research")
+    st.caption(
+        "Explore topics, discover insights "
+        "and generate research summaries."
+    )
+
+with col2:
+    st.markdown("#### 📧 Communication")
+    st.caption(
+        "Prepare professional emails "
+        "and review drafts before sending."
+    )
+
+with col3:
+    st.markdown("#### 📅 Operations")
+    st.caption(
+        "Manage meetings, strategic goals "
+        "and executive activities."
+    )
+
+st.markdown("---")
+
+# ---------------- CHAT HISTORY ---------------- #
+st.markdown("## 💬 AI Assistant")
+
+st.caption(
+    "Ask your AI Chief of Staff to research, "
+    "manage emails, schedule meetings and more."
+)
+
+for message in st.session_state.messages:
+
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
 
 # ---------------- USER INPUT ---------------- #
 
-prompt = st.chat_input("Type your request...")
+prompt = st.chat_input(
+    "Type your request...",
+    disabled=st.session_state.pending_action is not None
+)
+
 
 if prompt:
 
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": prompt
-        }
-    )
+    st.session_state.messages.append({
+        "role": "user",
+        "content": prompt
+    })
 
     with st.chat_message("user"):
-
         st.markdown(prompt)
 
     status = st.empty()
 
     route_type = route(prompt)
 
-    async def execute():
+    try:
 
-        result = await Runner.run(
-            planner_agent,
-            prompt
-        )
+        # ---------------- MEETING ---------------- #
 
-        return result.final_output
+        if route_type == "meeting":
 
-    if route_type == "meeting":
+            status.info("📋 Meeting Preparation Agent")
 
-        status.info("📋 Meeting Preparation Agent")
+            with st.spinner("Preparing meeting brief..."):
 
-        with st.spinner("Pulling calendar, research, tasks and memory..."):
-            output = prepare_meeting(prompt)
+                output = prepare_meeting(prompt)
 
-    elif route_type == "report":
 
-        status.info("📊 Report Generator Agent")
+        # ---------------- REPORT ---------------- #
 
-        with st.spinner("Compiling executive summary..."):
-            output = generate_executive_report()
+        elif route_type == "report":
 
-    elif route_type == "add_goal":
+            status.info("📊 Report Generator Agent")
 
-        status.info("🎯 Strategy Tracker Agent")
+            with st.spinner("Generating executive report..."):
 
-        with st.spinner("Saving strategic goal..."):
-            goal_text = extract_goal_text(prompt)
-            output = add_goal(goal_text)
+                output = generate_executive_report()
 
-    elif route_type == "list_goals":
 
-        status.info("🎯 Strategy Tracker Agent")
+        # ---------------- ADD GOAL ---------------- #
 
-        with st.spinner("Loading strategic goals..."):
-            output = format_goals(list_goals())
+        elif route_type == "add_goal":
 
-    else:
+            status.info("🎯 Strategy Tracker Agent")
 
-        status.info("🧠 Planner Agent")
+            with st.spinner("Saving strategic goal..."):
 
-        with st.spinner("Working..."):
-            output = asyncio.run(execute())
+                output = add_goal(extract_goal_text(prompt))
 
-    status.success("✅ Completed")
 
-    st.session_state.pending = {
-        "user": prompt,
-        "assistant": output,
-        "critical": is_critical_action(prompt),
-    }
+        # ---------------- LIST GOALS ---------------- #
 
-    with st.chat_message("assistant"):
+        elif route_type == "list_goals":
 
-        st.markdown(output)
+            status.info("🎯 Strategy Tracker Agent")
 
-# ---------------- HUMAN APPROVAL ---------------- #
-# Every response — critical actions especially (email / calendar / goal
-# updates) — waits for explicit human approval before being committed to
-# memory, matching the "human approval for critical actions" requirement.
+            with st.spinner("Loading strategic goals..."):
 
-if st.session_state.pending:
+                output = format_goals(list_goals())
 
-    pending = st.session_state.pending
+
+        # ---------------- EMAIL ---------------- #
+
+        elif route_type == "email":
+
+            status.info("📧 Email Agent")
+
+            with st.spinner("Preparing email draft..."):
+
+                result = asyncio.run(
+                    execute(email_agent, prompt)
+                )
+
+                pending = extract_pending_action(result)
+
+                if not pending:
+                    raise ValueError(
+                        "Email draft could not be extracted. "
+                        "No email was sent."
+                    )
+
+                st.session_state.pending_action = {
+                    "type": "email",
+                    "data": pending
+                }
+
+                st.session_state.edit_email = False
+
+                output = (
+                    "📧 Email draft prepared successfully. "
+                    "Review it below before sending."
+                )
+
+
+        # ---------------- CALENDAR ---------------- #
+
+        elif route_type == "calendar":
+
+            status.info("📅 Calendar Agent")
+
+            with st.spinner("Preparing calendar event..."):
+
+                result = asyncio.run(
+                    execute(calendar_agent, prompt)
+                )
+
+                pending = extract_pending_action(result)
+
+                if not pending:
+                    raise ValueError(
+                        "Calendar event details could not be extracted. "
+                        "No event was created."
+                    )
+
+                st.session_state.pending_action = {
+                    "type": "calendar",
+                    "data": pending
+                }
+
+                output = (
+                    "📅 Calendar event prepared successfully. "
+                    "Review it below before creating."
+                )
+
+
+        # ---------------- PLANNER ---------------- #
+
+        else:
+
+            status.info("🧠 Planner Agent")
+
+            with st.spinner("Working..."):
+
+               conversation_input = get_conversation_input()
+
+               result = asyncio.run(
+                            execute(planner_agent, conversation_input)
+                           )
+
+               output = result.final_output
+
+        status.success("✅ Completed")
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": str(output)
+        })
+
+        memory_store.save_memory(prompt, str(output))
+
+        with st.chat_message("assistant"):
+            st.markdown(output)
+
+    except Exception as e:
+
+        status.error(f"Something went wrong: {str(e)}")
+
+
+# ---------------- CONFIRMATION SECTION ---------------- #
+
+pending = st.session_state.pending_action
+
+if pending:
 
     st.markdown("---")
 
-    if pending["critical"]:
-        st.warning("⚠️ This looks like a critical action (email, calendar, or goal update). Please review before approving.")
+    # ---------------- EMAIL PREVIEW ---------------- #
 
-    col1, col2 = st.columns(2)
+    if pending["type"] == "email":
 
-    with col1:
-        if st.button("✅ Approve"):
+        data = pending["data"]
 
-            save_memory(pending["user"], pending["assistant"])
+        st.subheader("📧 Email Preview")
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": pending["assistant"]}
+        if st.session_state.edit_email:
+
+            st.subheader("✏️ Edit Your Email")
+
+            edited_to = st.text_input(
+                "Recipient Email",
+                value=data["to"],
+                key="edited_email_to"
             )
 
-            st.session_state.pending = None
-            st.success("Approved and saved.")
-            st.rerun()
+            edited_subject = st.text_input(
+                "Subject",
+                value=data["subject"],
+                key="edited_email_subject"
+            )
 
-    with col2:
-        if st.button("❌ Reject"):
+            edited_body = st.text_area(
+                "Email Body",
+                value=data["body"],
+                height=250,
+                key="edited_email_body"
+            )
 
-            st.session_state.pending = None
-            st.info("Rejected — not saved to memory.")
-            st.rerun()
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                if st.button("💾 Save Changes"):
+
+                    if (
+                        not edited_to.strip()
+                        or "@" not in edited_to
+                    ):
+                        st.error("Enter a valid recipient email.")
+
+                    elif not edited_subject.strip():
+                        st.error("Subject cannot be empty.")
+
+                    elif not edited_body.strip():
+                        st.error("Email body cannot be empty.")
+
+                    else:
+
+                        data["to"] = edited_to.strip()
+                        data["subject"] = edited_subject.strip()
+                        data["body"] = edited_body.strip()
+
+                        st.session_state.pending_action["data"] = data
+
+                        st.session_state.edit_email = False
+
+                        st.success("Email updated successfully!")
+
+                        st.rerun()
+
+            with col2:
+
+                if st.button("↩️ Back to Preview"):
+
+                    st.session_state.edit_email = False
+                    st.rerun()
+
+        else:
+
+            st.write("**To:**", data["to"])
+
+            st.write("**Subject:**", data["subject"])
+
+            st.markdown("**Email Body:**")
+
+            st.text(data["body"])
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+
+                if st.button("✏️ Edit Email"):
+
+                    st.session_state.edit_email = True
+                    st.rerun()
+
+            with col2:
+
+                if st.button("✅ Confirm & Send"):
+
+                    try:
+
+                        with st.spinner("Sending email..."):
+
+                            result = send_email(
+                                data["to"],
+                                data["subject"],
+                                data["body"]
+                            )
+
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": "✅ " + result
+                        })
+
+                        st.session_state.pending_action = None
+                        st.session_state.edit_email = False
+
+                        st.success(result)
+
+                        st.rerun()
+
+                    except Exception as e:
+
+                        st.error(f"Email sending failed: {str(e)}")
+
+            with col3:
+
+                if st.button("❌ Cancel Email"):
+
+                    st.session_state.pending_action = None
+                    st.session_state.edit_email = False
+
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "Email cancelled. No email was sent."
+                    })
+
+                    st.rerun()
+
+
+    # ---------------- CALENDAR PREVIEW ---------------- #
+
+    elif pending["type"] == "calendar":
+
+        data = pending["data"]
+
+        st.subheader("📅 Calendar Event Preview")
+
+        st.write("**Event Title:**", data["title"])
+
+        st.write("**Start:**", data["start"])
+
+        st.write("**End:**", data["end"])
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            if st.button("✅ Confirm & Create Event"):
+
+                try:
+
+                    with st.spinner("Creating calendar event..."):
+
+                        result = create_event(
+                            data["title"],
+                            data["start"],
+                            data["end"]
+                        )
+
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "✅ " + result
+                    })
+
+                    st.session_state.pending_action = None
+
+                    st.success(result)
+
+                    st.rerun()
+
+                except Exception as e:
+
+                    st.error(f"Calendar creation failed: {str(e)}")
+
+        with col2:
+
+            if st.button("❌ Cancel Event"):
+
+                st.session_state.pending_action = None
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "Calendar event cancelled. No event was created."
+                })
+
+                st.rerun()
+
 
 # ---------------- DOWNLOAD CHAT ---------------- #
 

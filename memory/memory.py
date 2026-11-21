@@ -24,3 +24,9 @@ def save_memory(user, assistant):
 
     with open(MEMORY_FILE, "w") as f:
         json.dump(history, f, indent=4)
+
+
+def clear_memory():
+
+    with open(MEMORY_FILE, "w") as f:
+        json.dump([], f, indent=4)
