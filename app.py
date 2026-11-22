@@ -127,12 +127,18 @@ def route(user_input):
     ]
 
     email_keywords = [
-        "send email",
-        "send an email",
-        "draft email",
-        "write email",
-        "compose email"
-    ]
+    "send email",
+    "send an email",
+    "draft email",
+    "draft an email",
+    "write email",
+    "write an email",
+    "compose email",
+    "compose an email",
+    "prepare an email",
+    "prepare email",
+    "prepare an email draft"
+]
 
     calendar_keywords = [
     "schedule",

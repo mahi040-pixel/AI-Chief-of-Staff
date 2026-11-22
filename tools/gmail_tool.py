@@ -1,6 +1,8 @@
-
 import os
+import json
 import base64
+
+import streamlit as st
 
 from email.mime.text import MIMEText
 
@@ -23,6 +25,7 @@ def gmail_service():
 
     creds = None
 
+    # 1. Use local token if available
     if os.path.exists("token.json"):
 
         try:
@@ -32,23 +35,39 @@ def gmail_service():
             )
 
         except (ValueError, OSError):
-            print("Invalid token. Starting fresh authentication.")
             creds = None
 
+    # 2. Load token from Streamlit Cloud Secrets
+    elif "GOOGLE_TOKEN_B64" in st.secrets:
+
+        token_data = base64.b64decode(
+            st.secrets["GOOGLE_TOKEN_B64"]
+        ).decode("utf-8")
+
+        token_info = json.loads(token_data)
+
+        creds = Credentials.from_authorized_user_info(
+            token_info,
+            SCOPES
+        )
+
+    # 3. Refresh expired credentials
     if creds and creds.expired and creds.refresh_token:
 
         try:
             creds.refresh(Request())
-            print("Gmail token refreshed successfully.")
 
         except RefreshError:
-            print("Token expired. Reauthentication required.")
             creds = None
 
+    # 4. Local OAuth fallback
     if not creds or not creds.valid:
 
         if not os.path.exists("credentials.json"):
-            raise FileNotFoundError("credentials.json not found.")
+            raise RuntimeError(
+                "Google authentication failed. "
+                "Please check GOOGLE_TOKEN_B64 in Streamlit Secrets."
+            )
 
         flow = InstalledAppFlow.from_client_secrets_file(
             "credentials.json",
@@ -57,6 +76,7 @@ def gmail_service():
 
         creds = flow.run_local_server(port=0)
 
+    # 5. Save refreshed token locally
     with open("token.json", "w") as token:
         token.write(creds.to_json())
 
